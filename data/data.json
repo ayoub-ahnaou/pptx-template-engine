@@ -1,0 +1,28 @@
+{
+  "report": {
+    "title": "GRC Risk Assessment Report",
+    "date": "September 7, 2026"
+  },
+  "company": {
+    "name": "Example Corporation"
+  },
+  "project": {
+    "name": "Information Security Program",
+    "manager": "Ayoub",
+    "status": "Active"
+  },
+  {
+    "risks": [
+      {
+        "name": "Data Loss",
+        "level": "Critical",
+        "status": "Open"
+      },
+      {
+        "name": "Unauthorized Access",
+        "level": "High",
+        "status": "Mitigated"
+      }
+    ]
+  }
+}
