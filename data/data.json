@@ -1,26 +1,32 @@
 {
   "report": {
-    "title": "GRC Risk Assessment Report, PowerPoint Template Engine",
+    "title": "GRC Risk Assessment Report",
     "date": "September 08, 2026"
   },
   "company": {
-    "name": "Oxial Corporation xGRC Morocco"
+    "name": "Company Corporation xGRC Morocco"
   },
   "project": {
-    "name": "Information Security Program",
-    "manager": "Ayoub Ahnaou lm9",
+    "name": "PowerPoint Template Engine",
+    "manager": "Ayoub Ahnaou",
     "status": "Active"
   },
   "risks": [
     {
       "name": "Data Loss",
       "level": "Critical",
-      "status": "Open"
+      "status": "Open",
+      "owner": "Security Team",
+      "description": "Loss of sensitive company information.",
+      "mitigation": "Implement stronger backup and access controls."
     },
     {
       "name": "Unauthorized Access",
       "level": "High",
-      "status": "Mitigated"
+      "status": "Mitigated",
+      "owner": "IT Team",
+      "description": "Unauthorized users may access protected resources.",
+      "mitigation": "Enforce multi-factor authentication."
     }
   ]
 }
