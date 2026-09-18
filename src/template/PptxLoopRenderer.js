@@ -1,10 +1,16 @@
+const ExpressionEvaluator =
+    require("./ExpressionEvaluator");
+
 class PptxLoopRenderer {
 
     constructor(data) {
         this.data = data;
+
+        this.evaluator =
+            new ExpressionEvaluator(data);
     }
 
-    render(slide) {
+    render(slide, block) {
 
         const shapes =
             slide.getTextShapes();
@@ -12,15 +18,13 @@ class PptxLoopRenderer {
         const startIndex =
             shapes.findIndex(
                 shape =>
-                    shape.getText().trim() ===
-                    "{{#risks}}"
+                    shape === block.startShape
             );
 
         const endIndex =
             shapes.findIndex(
                 shape =>
-                    shape.getText().trim() ===
-                    "{{/risks}}"
+                    shape === block.endShape
             );
 
         if (
@@ -36,16 +40,25 @@ class PptxLoopRenderer {
                 endIndex
             );
 
-        const risks =
-            this.data.risks || [];
+        const items =
+            this.resolve(
+                this.data,
+                block.expression
+            );
 
-        // Remove original template block
+        if (!Array.isArray(items)) {
+            throw new Error(
+                `Loop '${block.expression}' must resolve to an array`
+            );
+        }
+
+        // Remove the original template block
         slide.removeShape(
-            shapes[startIndex]
+            block.startShape
         );
 
         slide.removeShape(
-            shapes[endIndex]
+            block.endShape
         );
 
         for (
@@ -55,16 +68,16 @@ class PptxLoopRenderer {
             slide.removeShape(shape);
         }
 
-        const spacing = 500000;
+        const spacing = 900000;
 
         for (
             let i = 0;
-            i < risks.length;
+            i < items.length;
             i++
         ) {
 
-            const risk =
-                risks[i];
+            const item =
+                items[i];
 
             for (
                 const templateShape
@@ -79,28 +92,19 @@ class PptxLoopRenderer {
                 let text =
                     clone.getText();
 
-                text =
-                    text.replace(
-                        /\{\{name\}\}/g,
-                        risk.name
-                    );
+                // Ignore template control tags
+                if (
+                    text.includes("{{#if") ||
+                    text === "{{else}}" ||
+                    text === "{{/if}}"
+                ) {
+                    continue;
+                }
 
                 text =
-                    text.replace(
-                        /\{\{level\}\}/g,
-                        risk.level
-                    );
-
-                text =
-                    text.replace(
-                        /\{\{status\}\}/g,
-                        risk.status
-                    );
-
-                text =
-                    text.replace(
-                        /\{\{owner\}\}/g,
-                        risk.owner
+                    this.replaceVariables(
+                        text,
+                        item
                     );
 
                 clone.setText(text);
@@ -114,11 +118,66 @@ class PptxLoopRenderer {
                     (i * spacing)
                 );
 
-                slide.insertShape(
-                    clone
-                );
+                slide.insertShape(clone);
             }
         }
+    }
+
+    replaceVariables(text, context) {
+
+        return text.replace(
+            /\{\{([^{}]+)\}\}/g,
+            (match, expression) => {
+
+                const value =
+                    this.resolve(
+                        context,
+                        expression.trim()
+                    );
+
+                if (
+                    value === undefined ||
+                    value === null
+                ) {
+                    return match;
+                }
+
+                return String(value);
+            }
+        );
+    }
+
+    resolve(context, expression) {
+
+        const parts =
+            expression.split(".");
+
+        let current = context;
+
+        for (
+            const part
+            of parts
+        ) {
+
+            if (
+                current === null ||
+                current === undefined
+            ) {
+                return undefined;
+            }
+
+            if (
+                typeof current !== "object" ||
+                !(part in current)
+            ) {
+                return undefined;
+            }
+
+            current =
+                current[part];
+        }
+
+        return current;
     }
 }
 
