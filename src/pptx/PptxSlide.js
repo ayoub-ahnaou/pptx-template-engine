@@ -1,15 +1,18 @@
+const PptxShape =
+    require("./PptxShape");
+
 class PptxSlide {
 
     constructor(xml) {
         this.xml = xml;
     }
 
-    getTextNodes() {
+    getShapes() {
 
-        const nodes = [];
+        const shapes = [];
 
         const regex =
-            /<a:t>([\s\S]*?)<\/a:t>/g;
+            /<p:sp>[\s\S]*?<\/p:sp>/g;
 
         let match;
 
@@ -17,60 +20,72 @@ class PptxSlide {
             (match = regex.exec(this.xml)) !== null
         ) {
 
-            nodes.push({
-                text: match[1],
-                start: match.index,
-                end: regex.lastIndex
-            });
+            shapes.push(
+                new PptxShape(
+                    match[0]
+                )
+            );
         }
 
-        return nodes;
+        return shapes;
     }
 
-    getTexts() {
+    getTextShapes() {
 
         return this
-            .getTextNodes()
-            .map(node => node.text);
+            .getShapes()
+            .filter(
+                shape =>
+                    shape.getText().length > 0
+            );
     }
 
-    setText(oldText, newText) {
+    getNextShapeId() {
 
-        const escapedOldText =
-            this.escapeRegExp(oldText);
+        const shapes =
+            this.getShapes();
 
-        const regex =
-            new RegExp(
-                `(<a:t>)${escapedOldText}(</a:t>)`
+        const ids =
+            shapes
+                .map(shape =>
+                    Number(shape.id)
+                )
+                .filter(
+                    id =>
+                        Number.isInteger(id)
+                );
+
+        if (ids.length === 0) {
+            return 1;
+        }
+
+        return Math.max(...ids) + 1;
+    }
+
+    insertShape(shape) {
+
+        const newXml =
+            shape.getXml();
+
+        const position =
+            this.xml.lastIndexOf(
+                "</p:spTree>"
             );
+
+        if (position === -1) {
+            throw new Error(
+                "Could not find <p:spTree>"
+            );
+        }
 
         this.xml =
-            this.xml.replace(
-                regex,
-                `$1${this.escapeXml(newText)}$2`
-            );
+            this.xml.slice(0, position) +
+            newXml +
+            this.xml.slice(position);
     }
 
     getXml() {
         return this.xml;
-    }
-
-    escapeRegExp(value) {
-
-        return value.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-        );
-    }
-
-    escapeXml(value) {
-
-        return value
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&apos;");
     }
 }
 
