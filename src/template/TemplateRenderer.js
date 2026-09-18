@@ -1,201 +1,119 @@
-const ExpressionEvaluator = require("./ExpressionEvaluator");
-
-class TemplateRenderer {
+class PptxLoopRenderer {
 
     constructor(data) {
         this.data = data;
-        this.evaluator = new ExpressionEvaluator(data);
     }
 
+    render(slide) {
 
-    render(nodes, context = this.data) {
+        const shapes =
+            slide.getTextShapes();
 
-        let result = "";
-
-
-        for (const node of nodes) {
-
-
-            // -------------------------
-            // TEXT
-            // -------------------------
-
-            if (node.type === "text") {
-
-                result += node.value;
-
-            }
-
-
-            // -------------------------
-            // VARIABLE
-            // -------------------------
-
-            else if (
-                node.type === "variable"
-            ) {
-
-                const value =
-                    this.resolve(
-                        context,
-                        node.value
-                    );
-
-
-                if (
-                    value === undefined ||
-                    value === null
-                ) {
-
-                    console.warn(
-                        `Variable not found: ${node.value}`
-                    );
-
-                    result +=
-                        `{{${node.value}}}`;
-
-                } else {
-
-                    result +=
-                        String(value);
-                }
-            }
-
-
-            // -------------------------
-            // SECTION
-            // -------------------------
-
-            else if (
-                node.type === "section"
-            ) {
-
-                result +=
-                    this.renderSection(
-                        node,
-                        context
-                    );
-            }
-
-            else if (
-                node.type === "condition"
-            ) {
-
-                result +=
-                    this.renderCondition(
-                        node,
-                        context
-                    );
-            }
-        }
-
-
-        return result;
-    }
-
-
-    renderSection(section, context) {
-
-        const value =
-            this.resolve(
-                context,
-                section.expression
+        const startIndex =
+            shapes.findIndex(
+                shape =>
+                    shape.getText().trim() ===
+                    "{{#risks}}"
             );
 
-
-        // Array → loop
-        if (Array.isArray(value)) {
-
-            return value
-                .map(item =>
-                    this.render(
-                        section.children,
-                        item
-                    )
-                )
-                .join("");
-        }
-
-
-        // Truthy → render children
-        if (value) {
-
-            return this.render(
-                section.children,
-                context
+        const endIndex =
+            shapes.findIndex(
+                shape =>
+                    shape.getText().trim() ===
+                    "{{/risks}}"
             );
+
+        if (
+            startIndex === -1 ||
+            endIndex === -1
+        ) {
+            return;
         }
 
+        const templateShapes =
+            shapes.slice(
+                startIndex + 1,
+                endIndex
+            );
 
-        // False → render else
-        return this.render(
-            section.elseChildren,
-            context
+        const risks =
+            this.data.risks || [];
+
+        slide.removeShape(
+            shapes[startIndex]
         );
-    }
 
-    
-    renderCondition(condition, context) {
-
-        const result =
-            this.evaluator.evaluate(
-                condition.expression,
-                context
-            );
-
-
-        if (result) {
-
-            return this.render(
-                condition.children,
-                context
-            );
-        }
-
-
-        return this.render(
-            condition.elseChildren,
-            context
+        slide.removeShape(
+            shapes[endIndex]
         );
-    }
 
-    resolve(context, expression) {
-
-        const parts =
-            expression.split(".");
-
-
-        let current = context;
-
-
-        for (const part of parts) {
-
-            if (
-                current === null ||
-                current === undefined
-            ) {
-
-                return undefined;
-            }
-
-
-            if (
-                typeof current !== "object" ||
-                !(part in current)
-            ) {
-
-                return undefined;
-            }
-
-
-            current =
-                current[part];
+        for (const shape of templateShapes) {
+            slide.removeShape(shape);
         }
 
+        const spacing = 500000;
 
-        return current;
+        for (
+            let i = 0;
+            i < risks.length;
+            i++
+        ) {
+
+            const risk =
+                risks[i];
+
+            for (
+                const templateShape
+                of templateShapes
+            ) {
+
+                const clone =
+                    templateShape.clone(
+                        slide.getNextShapeId()
+                    );
+
+                let text =
+                    clone.getText();
+
+                text =
+                    text.replace(
+                        /\{\{name\}\}/g,
+                        risk.name
+                    );
+
+                text =
+                    text.replace(
+                        /\{\{level\}\}/g,
+                        risk.level
+                    );
+
+                text =
+                    text.replace(
+                        /\{\{status\}\}/g,
+                        risk.status
+                    );
+
+                text =
+                    text.replace(
+                        /\{\{owner\}\}/g,
+                        risk.owner
+                    );
+
+                clone.setText(text);
+
+                const position =
+                    clone.getPosition();
+
+                clone.setPosition(
+                    position.x,
+                    position.y +
+                    (i * spacing)
+                );
+
+                slide.insertShape(clone);
+            }
+        }
     }
 }
 
-
-module.exports = TemplateRenderer;
+module.exports = PptxLoopRenderer;
