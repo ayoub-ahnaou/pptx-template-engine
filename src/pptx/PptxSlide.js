@@ -84,6 +84,17 @@ class PptxSlide {
             this.xml.slice(position);
     }
 
+    removeShape(shape) {
+
+        const shapeXml = shape.getXml();
+
+        this.xml =
+            this.xml.replace(
+                shapeXml,
+                ""
+            );
+    }
+
     getXml() {
         return this.xml;
     }
