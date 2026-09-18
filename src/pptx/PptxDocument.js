@@ -1,6 +1,5 @@
 const fs = require("fs");
 const JSZip = require("jszip");
-
 const PptxSlide = require("./PptxSlide");
 
 class PptxDocument {
@@ -10,7 +9,6 @@ class PptxDocument {
     }
 
     static async load(filePath) {
-
         const buffer =
             fs.readFileSync(filePath);
 
@@ -21,16 +19,13 @@ class PptxDocument {
     }
 
     getSlideFiles() {
-
         return Object.keys(this.zip.files)
             .filter(file =>
-                /^ppt\/slides\/slide\d+\.xml$/
-                    .test(file)
+                /^ppt\/slides\/slide\d+\.xml$/.test(file)
             );
     }
 
     async getSlideXml(slideFile) {
-
         const file =
             this.zip.file(slideFile);
 
@@ -44,25 +39,27 @@ class PptxDocument {
     }
 
     async getSlide(slideFile) {
-
         const xml =
-            await this.getSlideXml(
-                slideFile
-            );
+            await this.getSlideXml(slideFile);
 
         return new PptxSlide(xml);
     }
 
     setSlideXml(slideFile, xml) {
-
         this.zip.file(
             slideFile,
             xml
         );
     }
 
-    async save(filePath) {
+    setSlide(slideFile, slide) {
+        this.setSlideXml(
+            slideFile,
+            slide.getXml()
+        );
+    }
 
+    async save(filePath) {
         const buffer =
             await this.zip.generateAsync({
                 type: "nodebuffer"
