@@ -40,7 +40,7 @@ class PptxBlockRenderer {
         const allShapes =
             this.collectShapes(section);
 
-        // Remove original template
+        // Remove original template shapes
         for (const shape of allShapes) {
             slide.removeShape(shape);
         }
@@ -91,15 +91,57 @@ class PptxBlockRenderer {
                 const position =
                     clone.getPosition();
 
-                clone.setPosition(
-                    position.x,
-                    position.y +
-                    (index * spacing)
-                );
+                if (position) {
+                    clone.setPosition(
+                        position.x,
+                        position.y +
+                        (index * spacing)
+                    );
+                }
 
                 slide.insertShape(
                     clone
                 );
+            }
+        }
+    }
+
+    /**
+     * Renders a block tree using a single item context (for slide duplication).
+     * Replaces placeholders, evaluates nested conditions, cleans up unselected shapes,
+     * and maintains original shape positioning.
+     */
+    renderSingleItem(slide, tree, context) {
+        for (const node of tree) {
+            if (node.type === "section") {
+
+                // Get selected branch shapes (handling conditions if present)
+                const selectedShapes = this.renderNodes(node.children, context);
+                const allShapes = this.collectShapes(node);
+
+                // 1. Remove shapes belonging to unselected condition branches
+                for (const shape of allShapes) {
+                    if (!selectedShapes.includes(shape)) {
+                        slide.removeShape(shape);
+                    }
+                }
+
+                // 2. Perform variable replacement on active shapes & update slide XML
+                for (const shape of selectedShapes) {
+                    const originalXml = shape.getXml();
+                    const currentText = shape.getText();
+                    const updatedText = this.replaceVariables(currentText, context);
+
+                    shape.setText(updatedText);
+
+                    // Update slide XML string by replacing the old shape XML with updated shape XML
+                    slide.xml = slide.xml.replace(originalXml, shape.getXml());
+                }
+
+                // 3. Remove loop control markers ({{#risks}}, {{/risks}}, {{else}})
+                if (node.startShape) slide.removeShape(node.startShape);
+                if (node.endShape) slide.removeShape(node.endShape);
+                if (node.elseShape) slide.removeShape(node.elseShape);
             }
         }
     }
@@ -242,44 +284,6 @@ class PptxBlockRenderer {
         }
 
         return current;
-    }
-
-    renderContext(slide, section, context) {
-
-        const shapes =
-            this.renderNodes(
-                section.children,
-                context
-            );
-
-        for (const templateShape of shapes) {
-
-            const clone =
-                templateShape.clone(
-                    slide.getNextShapeId()
-                );
-
-            const text =
-                this.replaceVariables(
-                    clone.getText(),
-                    context
-                );
-
-            clone.setText(text);
-
-            slide.insertShape(
-                clone
-            );
-        }
-
-        // Remove loop markers
-        slide.removeShape(
-            section.startShape
-        );
-
-        slide.removeShape(
-            section.endShape
-        );
     }
 }
 
