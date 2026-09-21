@@ -26,10 +26,6 @@ class PptxTemplateParser {
                     ? current.elseChildren
                     : current.children;
 
-            /*
-             * {{#something}}
-             */
-
             const sectionStart =
                 text.match(
                     /^\{\{#(.+)\}\}$/
@@ -71,6 +67,35 @@ class PptxTemplateParser {
                         condition
                     );
 
+                } else if (expression.startsWith("eachSlide ")) {
+
+                    const slideSection = {
+
+                        type: "eachSlide",
+
+                        expression:
+                            expression
+                                .substring(10)
+                                .trim(),
+
+                        startShape:
+                            shape,
+
+                        children: [],
+
+                        elseChildren: [],
+
+                        inElse: false
+                    };
+
+                    target.push(
+                        slideSection
+                    );
+
+                    stack.push(
+                        slideSection
+                    );
+
                 } else {
 
                     const section = {
@@ -101,10 +126,6 @@ class PptxTemplateParser {
                 continue;
             }
 
-            /*
-             * {{/something}}
-             */
-
             const sectionEnd =
                 text.match(
                     /^\{\{\/(.+)\}\}$/
@@ -124,17 +145,15 @@ class PptxTemplateParser {
                     );
                 }
 
-                const expected =
-                    block.type === "condition"
-                        ? "if"
-                        : block.expression;
+                let expected = block.expression;
+                if (block.type === "condition") expected = "if";
+                if (block.type === "eachSlide") expected = `eachSlide ${block.expression}`;
 
                 if (
-                    closingName !== expected
+                    closingName !== expected && closingName !== block.expression
                 ) {
                     throw new Error(
-                        `Mismatched block: ` +
-                        `${expected} != ${closingName}`
+                        `Mismatched block: ${expected} != ${closingName}`
                     );
                 }
 
@@ -144,17 +163,14 @@ class PptxTemplateParser {
                 continue;
             }
 
-            /*
-             * {{else}}
-             */
-
             if (
                 text === "{{else}}"
             ) {
 
                 if (
                     current.type !== "section" &&
-                    current.type !== "condition"
+                    current.type !== "condition" &&
+                    current.type !== "eachSlide"
                 ) {
                     throw new Error(
                         "{{else}} must be inside a block"
@@ -168,10 +184,6 @@ class PptxTemplateParser {
 
                 continue;
             }
-
-            /*
-             * Normal PowerPoint shape
-             */
 
             target.push({
                 type: "shape",
