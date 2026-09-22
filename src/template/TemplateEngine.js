@@ -26,14 +26,13 @@ class TemplateEngine {
      * Main pipeline running across all slides in presentation order.
      */
     async renderDocument(doc) {
-        let slideFiles = doc.getSlideFiles();
-        let i = 0;
+        const initialSlideFiles = doc.getSlideFiles();
 
-        while (i < slideFiles.length) {
-            const slideFile = slideFiles[i];
+        for (let idx = 0; idx < initialSlideFiles.length; idx++) {
+            const slideFile = initialSlideFiles[idx];
             const rawSlideXml = await doc.getSlideXml(slideFile);
             const slide = new PptxSlide(rawSlideXml);
-            const shapes = slide.getTextShapes();
+            let shapes = slide.getTextShapes();
 
             let tree = [];
             try {
@@ -50,16 +49,14 @@ class TemplateEngine {
 
                 if (Array.isArray(items) && items.length > 0) {
                     let previousSlideFile = slideFile;
-
-                    // Step A: Duplicate target slides from the clean original XML
                     const slideTargetFiles = [slideFile];
+
                     for (let itemIdx = 1; itemIdx < items.length; itemIdx++) {
                         const targetFile = await doc.duplicateSlide(previousSlideFile);
                         slideTargetFiles.push(targetFile);
                         previousSlideFile = targetFile;
                     }
 
-                    // Step B: Render each item into its respective slide in isolation
                     for (let itemIdx = 0; itemIdx < items.length; itemIdx++) {
                         const itemContext = items[itemIdx];
                         const targetFile = slideTargetFiles[itemIdx];
@@ -69,7 +66,6 @@ class TemplateEngine {
                         const targetShapes = targetSlide.getTextShapes();
                         const targetTree = this.parser.parse(targetShapes);
 
-                        // Adapt eachSlide block into standard section AST for single-item processing
                         const adaptedTree = targetTree.map(node => {
                             if (node.type === "eachSlide") {
                                 return { ...node, type: "section" };
@@ -83,35 +79,43 @@ class TemplateEngine {
                         doc.setSlide(targetFile, targetSlide);
                     }
 
-                    // Refresh slide list to account for newly inserted duplicate slides
-                    slideFiles = doc.getSlideFiles();
-                    i += items.length;
                     continue;
                 }
             }
 
-            // 2. IN-SLIDE LOOPS ({{#items}})
-            const hasSection = tree.some(node => node.type === "section");
-            if (hasSection) {
+            // 2. IN-SLIDE TABLE & SHAPE LOOPS ({{#items}})
+            const rawXml = slide.getXml();
+            const hasSectionInTree = tree.some(node => node.type === "section");
+            const hasLoopInXml = /\{\{#[^{}]+\}\}/.test(rawXml);
+
+            if (hasSectionInTree || hasLoopInXml) {
                 this.blockRenderer.render(slide, tree);
+                
+                // Refresh shapes and AST tree from updated slide XML after table mutations
+                shapes = slide.getTextShapes();
+                try {
+                    tree = this.parser.parse(shapes);
+                } catch (e) {
+                    tree = shapes.map(s => ({ type: "shape", shape: s }));
+                }
             }
 
             // 3. STANDALONE CONDITIONS ({{#if condition}})
             const conditionNodes = tree.filter(node => node.type === "condition");
             if (conditionNodes.length > 0) {
-                const PptxConditionRenderer = require("./PptxConditionRenderer");
-                const conditionRenderer = new PptxConditionRenderer(this.data);
-
                 for (const conditionNode of conditionNodes) {
-                    conditionRenderer.render(slide, conditionNode, this.data);
+                    this.conditionRenderer.render(slide, conditionNode, this.data);
                 }
+
+                // Refresh shapes again after condition removals
+                shapes = slide.getTextShapes();
             }
 
-            // 4. GLOBAL VARIABLE REPLACEMENT
+            // 4. GLOBAL VARIABLE REPLACEMENT (project.name, project.manager, etc.)
             this.processGlobalVariables(slide, this.data);
-            doc.setSlide(slideFile, slide);
 
-            i++;
+            // Commit final slide XML back to presentation ZIP
+            doc.setSlide(slideFile, slide);
         }
     }
 
