@@ -27,6 +27,14 @@
       "owner": "IT Team",
       "description": "Unauthorized users may access protected resources.",
       "mitigation": "Enforce multi-factor authentication."
+    },
+    {
+      "name": "Blocked Users",
+      "level": "Low",
+      "status": "Installed",
+      "owner": "Infrastructure Team",
+      "description": "Users are blocked from accessing certain resources.",
+      "mitigation": "Review and update user access permissions."
     }
   ]
 }
