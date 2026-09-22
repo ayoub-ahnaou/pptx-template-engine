@@ -45,10 +45,8 @@ class PptxDocument {
     }
 
     /**
-     * Duplicates a slide and registers all required PowerPoint archive relationships.
-     * Inserts the new slide in presentation order directly after the source slide.
-     * @param {string} sourceSlideFile e.g., "ppt/slides/slide4.xml"
-     * @returns {Promise<string>} targetSlideFile e.g., "ppt/slides/slide6.xml"
+     * Duplicates a slide, generates new relationship IDs, and inserts the new slide
+     * directly after the source slide in ppt/presentation.xml without corrupting slide references.
      */
     async duplicateSlide(sourceSlideFile) {
         const slideFiles = this.getSlideFiles();
@@ -88,22 +86,19 @@ class PptxDocument {
         presRelsXml = presRelsXml.replace("</Relationships>", `${newRelationship}</Relationships>`);
         this.zip.file("ppt/_rels/presentation.xml.rels", presRelsXml);
 
-        // 5. Register in ppt/presentation.xml (INSERT IN ORDER)
+        // 5. Register in ppt/presentation.xml (Insert immediately AFTER the source slide)
         let presXml = await this.zip.file("ppt/presentation.xml").async("string");
         
-        // Find relationship ID (rId) of the source slide in presentation.xml.rels
         const sourceFileName = sourceSlideFile.replace("ppt/", "");
         const sourceRelMatch = presRelsXml.match(new RegExp(`<Relationship\\s+[^>]*?Id="([^"]+)"[^>]*?Target="${sourceFileName}"`));
         const sourceRId = sourceRelMatch ? sourceRelMatch[1] : null;
 
-        // Generate new unique numeric sldId
         const sldIdMatches = [...presXml.matchAll(/id="(\d+)"/g)];
         const maxSldId = sldIdMatches.reduce((max, m) => Math.max(max, parseInt(m[1], 10)), 255);
         const newSldId = maxSldId + 1;
 
         const newSldIdEntry = `<p:sldId id="${newSldId}" r:id="${newRId}"/>`;
 
-        // If source slide rId is found in presentation.xml, insert immediately AFTER it
         if (sourceRId) {
             const sourceSldPattern = new RegExp(`(<p:sldId\\s+[^>]*?r:id="${sourceRId}"[^>]*?\\/>)`);
             if (sourceSldPattern.test(presXml)) {

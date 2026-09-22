@@ -48,13 +48,9 @@ class PptxSlide {
             this.xml.slice(position);
     }
 
-    /**
-     * Removes a shape from the slide XML reliably using its unique shape ID or XML content.
-     */
     removeShape(shape) {
         if (!shape) return;
 
-        // Try removing by shape ID first (most reliable)
         if (shape.id) {
             const shapeIdRegex = new RegExp(`<p:sp>(?:(?!<\/p:sp>)[\s\S])*?<p:cNvPr[^>]*?id="${shape.id}"[\s\S]*?<\/p:sp>`, 'g');
             if (shapeIdRegex.test(this.xml)) {
@@ -63,7 +59,6 @@ class PptxSlide {
             }
         }
 
-        // Fallback: try direct XML replace
         const shapeXml = shape.getXml();
         if (this.xml.includes(shapeXml)) {
             this.xml = this.xml.replace(shapeXml, "");
@@ -72,6 +67,10 @@ class PptxSlide {
 
     getXml() {
         return this.xml;
+    }
+
+    setXml(xml) {
+        this.xml = xml;
     }
 }
 
