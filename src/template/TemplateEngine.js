@@ -2,6 +2,7 @@ const PptxDocument = require("../pptx/PptxDocument");
 const PptxSlide = require("../pptx/PptxSlide");
 const PptxTemplateParser = require("../pptx/PptxTemplateParser");
 const PptxBlockRenderer = require("./PptxBlockRenderer");
+const PptxConditionRenderer = require("./PptxConditionRenderer");
 
 class TemplateEngine {
 
@@ -9,6 +10,7 @@ class TemplateEngine {
         this.data = data;
         this.parser = new PptxTemplateParser();
         this.blockRenderer = new PptxBlockRenderer(data);
+        this.conditionRenderer = new PptxConditionRenderer(data);
     }
 
     /**
@@ -40,10 +42,8 @@ class TemplateEngine {
                 tree = shapes.map(s => ({ type: "shape", shape: s }));
             }
 
-            // Check if this slide is Slide 4 OR contains {{#eachSlide ...}}
-            const isSlide4 = slideFile.endsWith("slide4.xml");
-            const eachSlideNode = tree.find(node => node.type === "eachSlide") || 
-                                  (isSlide4 ? tree.find(node => node.type === "section") : null);
+            // 1. DYNAMIC SLIDE DUPLICATION LOOP ({{#eachSlide array}})
+            const eachSlideNode = tree.find(node => node.type === "eachSlide");
 
             if (eachSlideNode) {
                 const items = this.blockRenderer.resolve(this.data, eachSlideNode.expression);
@@ -51,7 +51,7 @@ class TemplateEngine {
                 if (Array.isArray(items) && items.length > 0) {
                     let previousSlideFile = slideFile;
 
-                    // Step A: First duplicate all target slides from the clean original XML
+                    // Step A: Duplicate target slides from the clean original XML
                     const slideTargetFiles = [slideFile];
                     for (let itemIdx = 1; itemIdx < items.length; itemIdx++) {
                         const targetFile = await doc.duplicateSlide(previousSlideFile);
@@ -59,59 +59,55 @@ class TemplateEngine {
                         previousSlideFile = targetFile;
                     }
 
-                    // Step B: Render each item in isolation
+                    // Step B: Render each item into its respective slide in isolation
                     for (let itemIdx = 0; itemIdx < items.length; itemIdx++) {
                         const itemContext = items[itemIdx];
                         const targetFile = slideTargetFiles[itemIdx];
 
-                        // Always fetch fresh XML string from ZIP to avoid cross-contamination
                         const freshXml = await doc.getSlideXml(targetFile);
                         const targetSlide = new PptxSlide(freshXml);
                         const targetShapes = targetSlide.getTextShapes();
                         const targetTree = this.parser.parse(targetShapes);
 
-                        // Map eachSlide/section AST nodes to single item section context
+                        // Adapt eachSlide block into standard section AST for single-item processing
                         const adaptedTree = targetTree.map(node => {
-                            if (
-                                node.type === "eachSlide" ||
-                                node.expression === eachSlideNode.expression
-                            ) {
+                            if (node.type === "eachSlide") {
                                 return { ...node, type: "section" };
                             }
                             return node;
                         });
 
-                        // Render single item (Risk 1 on Slide 4, Risk 2 on Slide 5/6, etc.)
                         this.blockRenderer.renderSingleItem(targetSlide, adaptedTree, itemContext);
                         this.processGlobalVariables(targetSlide, itemContext);
 
-                        // Save updated XML to the archive
                         doc.setSlide(targetFile, targetSlide);
                     }
 
-                    // Refresh slide list to account for inserted duplicate slides
+                    // Refresh slide list to account for newly inserted duplicate slides
                     slideFiles = doc.getSlideFiles();
                     i += items.length;
                     continue;
                 }
             }
 
-            // Standard in-slide loop processing for other slides (e.g., Slide 3)
+            // 2. IN-SLIDE LOOPS ({{#items}})
             const hasSection = tree.some(node => node.type === "section");
             if (hasSection) {
                 this.blockRenderer.render(slide, tree);
             }
 
-            const hasCondition = tree.some(node => node.type === "condition");
-            if (hasCondition) {
-                for (const node of tree) {
-                    if (node.type === "condition") {
-                        const conditionRenderer = new (require("./PptxConditionRenderer"))(this.data);
-                        conditionRenderer.render(slide, node, this.data);
-                    }
+            // 3. STANDALONE CONDITIONS ({{#if condition}})
+            const conditionNodes = tree.filter(node => node.type === "condition");
+            if (conditionNodes.length > 0) {
+                const PptxConditionRenderer = require("./PptxConditionRenderer");
+                const conditionRenderer = new PptxConditionRenderer(this.data);
+
+                for (const conditionNode of conditionNodes) {
+                    conditionRenderer.render(slide, conditionNode, this.data);
                 }
             }
 
+            // 4. GLOBAL VARIABLE REPLACEMENT
             this.processGlobalVariables(slide, this.data);
             doc.setSlide(slideFile, slide);
 

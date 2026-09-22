@@ -1,84 +1,60 @@
-const ExpressionEvaluator =
-    require("./ExpressionEvaluator");
+const ExpressionEvaluator = require("./ExpressionEvaluator");
 
 class PptxConditionRenderer {
 
     constructor(data) {
         this.data = data;
-
-        this.evaluator =
-            new ExpressionEvaluator(data);
+        this.evaluator = new ExpressionEvaluator(data);
     }
 
-    render(slide, condition, context) {
+    render(slide, condition, context = this.data) {
+        // 1. Evaluate condition
+        const isTrue = this.evaluator.evaluate(condition.expression, context);
 
-        const result =
-            this.evaluator.evaluate(
-                condition.expression,
-                context
-            );
+        // 2. Identify shapes to keep vs remove
+        const selectedNodes = isTrue ? condition.children : condition.elseChildren;
+        const unselectedNodes = isTrue ? condition.elseChildren : condition.children;
 
-        const shapes =
-            result
-                ? condition.children
-                : condition.elseChildren;
+        const selectedShapes = selectedNodes
+            .filter(node => node.type === "shape")
+            .map(node => node.shape);
 
-        const selectedShapes =
-            shapes
-                .filter(
-                    node =>
-                        node.type === "shape"
-                )
-                .map(
-                    node =>
-                        node.shape
-                );
+        const unselectedShapes = unselectedNodes
+            .filter(node => node.type === "shape")
+            .map(node => node.shape);
 
-        const allConditionShapes = [
-            ...condition.children,
-            ...condition.elseChildren
-        ]
-            .filter(
-                node =>
-                    node.type === "shape"
-            )
-            .map(
-                node =>
-                    node.shape
-            );
-
-        // Remove condition content
-        for (
-            const shape
-            of allConditionShapes
-        ) {
+        // 3. Remove shapes belonging to the unselected branch
+        for (const shape of unselectedShapes) {
             slide.removeShape(shape);
         }
 
-        // Remove markers
-        slide.removeShape(
-            condition.startShape
-        );
+        // 4. Remove block tag shapes ({{#if ...}}, {{else}}, {{/if}})
+        if (condition.startShape) slide.removeShape(condition.startShape);
+        if (condition.elseShape) slide.removeShape(condition.elseShape);
+        if (condition.endShape) slide.removeShape(condition.endShape);
 
-        slide.removeShape(
-            condition.endShape
-        );
+        // 5. Replace any remaining placeholders in selected shapes and update slide XML
+        for (const shape of selectedShapes) {
+            const currentText = shape.getText();
 
-        if (condition.elseShape) {
-            slide.removeShape(
-                condition.elseShape
-            );
-        }
+            if (currentText.includes("{{")) {
+                const updatedText = currentText.replace(
+                    /\{\{([^{}]+)\}\}/g,
+                    (match, expr) => {
+                        const trimmed = expr.trim();
+                        if (trimmed.startsWith("#") || trimmed.startsWith("/")) return match;
+                        const val = this.evaluator.resolve(context, trimmed) ?? 
+                                    this.evaluator.resolve(this.data, trimmed);
+                        return val !== undefined && val !== null ? String(val) : match;
+                    }
+                );
 
-        // Reinsert selected shapes
-        for (
-            const shape
-            of selectedShapes
-        ) {
-            slide.insertShape(shape);
+                const oldShapeXml = shape.getXml();
+                shape.setText(updatedText);
+                slide.xml = slide.xml.replace(oldShapeXml, shape.getXml());
+            }
         }
     }
 }
 
-module.exports =
-    PptxConditionRenderer;
+module.exports = PptxConditionRenderer;
