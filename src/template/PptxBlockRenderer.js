@@ -1,10 +1,24 @@
+const { XMLParser, XMLBuilder } = require("fast-xml-parser");
 const ExpressionEvaluator = require("./ExpressionEvaluator");
+const XmlSanitizer = require("./XmlSanitizer");
 
 class PptxBlockRenderer {
 
     constructor(data) {
         this.data = data;
         this.evaluator = new ExpressionEvaluator(data);
+
+        // Options for fast-xml-parser to preserve attributes and XML structure
+        this.parserOptions = {
+            ignoreAttributes: false,
+            attributeNamePrefix: "@_",
+            preserveOrder: true,
+            commentPropName: "#comment"
+        };
+
+        // Instantiate parser and builder instance
+        this.parser = new XMLParser(this.parserOptions);
+        this.builder = new XMLBuilder(this.parserOptions);
     }
 
     render(slide, tree) {
@@ -73,42 +87,96 @@ class PptxBlockRenderer {
         const startTag = `{{#${section.expression}}}`;
         const endTag = `{{/${section.expression}}}`;
 
-        // 1. Extract all individual <a:tr>...</a:tr> rows inside the table
-        const trRegex = /<a:tr[^>]*?>[\s\S]*?<\/a:tr>/gi;
-        const allRows = slideXml.match(trRegex);
+        const tableRegex = new RegExp(`(<a:tbl[^>]*?>[\\s\\S]*?${this.escapeRegex(startTag)}[\\s\\S]*?${this.escapeRegex(endTag)}[\\s\\S]*?<\\/a:tbl>)`, 'i');
+        const match = slideXml.match(tableRegex);
 
-        if (!allRows) return;
+        if (!match) return;
 
-        // 2. Find the exact row index that contains the start tag
-        let targetRowIndex = -1;
-        for (let i = 0; i < allRows.length; i++) {
-            if (allRows[i].includes(startTag)) {
-                targetRowIndex = i;
-                break;
+        const rawMatchedTableXml = match[1];
+        let originalTableXml = rawMatchedTableXml;
+
+        // 1. Clean table properties
+        originalTableXml = originalTableXml.replace(/<a:tblPr([^>]*?)>/i, (tblPrMatch, attrs) => {
+            let cleanedAttrs = attrs
+                .replace(/firstRow="1"/g, 'firstRow="0"')
+                .replace(/bandRow="1"/g, 'bandRow="0"')
+                .replace(/firstCol="1"/g, 'firstCol="0"')
+                .replace(/lastCol="1"/g, 'lastCol="0"');
+            return `<a:tblPr${cleanedAttrs}>`;
+        });
+
+        originalTableXml = originalTableXml.replace(/<a:tableStyleId>[^<]*<\/a:tableStyleId>/gi, "");
+
+        // 2. Parse AST
+        const tableAst = this.parser.parse(originalTableXml);
+        const tblNode = tableAst.find(node => node["a:tbl"]);
+
+        if (!tblNode || !tblNode["a:tbl"]) return;
+
+        const tblChildren = tblNode["a:tbl"];
+        const rows = tblChildren.filter(child => child["a:tr"]);
+
+        let startRowIdx = -1;
+        let endRowIdx = -1;
+
+        for (let i = 0; i < rows.length; i++) {
+            const rowXml = this.builder.build([rows[i]]);
+            const rowText = rowXml.replace(/<[^>]+>/g, "");
+
+            if (rowText.includes(startTag)) startRowIdx = i;
+            if (rowText.includes(endTag)) endRowIdx = i;
+        }
+
+        if (startRowIdx === -1 || endRowIdx === -1) return;
+
+        const headerRows = rows.slice(0, startRowIdx);
+        let contentRows = [];
+
+        // --- FIXED ROW PARTITIONING ---
+        if (startRowIdx === endRowIdx) {
+            // Both tags live in the same row -> that row IS the content template
+            contentRows = [rows[startRowIdx]];
+        } else if (startRowIdx < endRowIdx) {
+            if (startRowIdx + 1 < endRowIdx) {
+                // Control tags are on separate dedicated boundary rows
+                contentRows = rows.slice(startRowIdx + 1, endRowIdx);
+            } else {
+                // Adjacent rows
+                contentRows = [rows[startRowIdx]];
             }
         }
 
-        if (targetRowIndex === -1) return;
+        const footerRows = rows.slice(endRowIdx + 1);
+        const generatedRows = [];
 
-        // The isolated data row XML
-        const templateRowXml = allRows[targetRowIndex];
-        let renderedRowsXml = "";
-
-        // 3. Duplicate ONLY the target data row for each item
         for (const itemContext of items) {
-            let rowInstanceXml = templateRowXml;
+            for (const templateRowAst of contentRows) {
+                let rowXml = this.builder.build([templateRowAst]);
 
-            // Remove control loop tags from row XML
-            rowInstanceXml = rowInstanceXml.replace(startTag, "").replace(endTag, "");
+                // Strip loop control tags
+                rowXml = rowXml.replace(new RegExp(this.escapeRegex(startTag), 'g'), "");
+                rowXml = rowXml.replace(new RegExp(this.escapeRegex(endTag), 'g'), "");
 
-            // Replace variables ({{name}}, {{level}}, etc.)
-            rowInstanceXml = this.replaceVariables(rowInstanceXml, itemContext);
+                // Replace variables and apply {{bgColor:...}} / {{textColor:...}}
+                rowXml = this.replaceVariables(rowXml, itemContext);
 
-            renderedRowsXml += rowInstanceXml;
+                const newRowAst = this.parser.parse(rowXml);
+                generatedRows.push(...newRowAst);
+            }
         }
 
-        // 4. Replace ONLY the single target template row in slideXml
-        slideXml = slideXml.replace(templateRowXml, renderedRowsXml);
+        const firstRowIndex = tblChildren.findIndex(child => child["a:tr"]);
+        const updatedTblChildren = [
+            ...tblChildren.slice(0, firstRowIndex),
+            ...headerRows,
+            ...generatedRows,
+            ...footerRows
+        ];
+
+        tblNode["a:tbl"] = updatedTblChildren;
+
+        const updatedTableXml = this.builder.build(tableAst);
+        slideXml = slideXml.replace(rawMatchedTableXml, updatedTableXml);
         slide.setXml(slideXml);
     }
 
@@ -149,6 +217,88 @@ class PptxBlockRenderer {
                 slide.insertShape(clone);
             }
         }
+    }
+
+    /**
+     * Replaces {{textColor:...}} tags inside text paragraphs and updates <a:rPr> color.
+     * Supports dot-notation paths (e.g. report.textColor) and flexible spacing.
+     */
+    applyTextColors(xmlSnippet, context) {
+        return xmlSnippet.replace(/<a:p[^>]*?>[\s\S]*?<\/a:p>/gi, (paraXml) => {
+            // Strip internal XML tags to evaluate full plain text
+            const plainText = paraXml.replace(/<[^>]+>/g, "");
+            const colorTagMatch = plainText.match(/\{\{textColor:\s*([^{}\s]+)\}\}/);
+
+            if (!colorTagMatch) return paraXml;
+
+            const colorKey = colorTagMatch[1].trim();
+            const hexRaw = this.resolve(context, colorKey) ?? this.resolve(this.data, colorKey);
+
+            // Clean the tag string from paragraph text runs
+            let updatedPara = paraXml.replace(new RegExp(`\\{\\{textColor:\\s*${this.escapeRegex(colorKey)}\\}\\}\\s*`, 'g'), "");
+
+            if (!hexRaw) return updatedPara;
+
+            const hex = String(hexRaw).replace('#', '').trim();
+            const colorXml = `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`;
+
+            // Inject or update solidFill inside <a:rPr>
+            return updatedPara.replace(/<a:rPr([^>]*?)>([\s\S]*?)<\/a:rPr>/gi, (match, attrs, innerProps) => {
+                let newInnerProps = innerProps;
+                if (/<a:solidFill[^>]*?>[\s\S]*?<\/a:solidFill>/i.test(newInnerProps)) {
+                    newInnerProps = newInnerProps.replace(/<a:solidFill[^>]*?>[\s\S]*?<\/a:solidFill>/i, colorXml);
+                } else {
+                    newInnerProps = colorXml + newInnerProps;
+                }
+                return `<a:rPr${attrs}>${newInnerProps}</a:rPr>`;
+            });
+        });
+    }
+
+    /**
+     * Replaces {{bgColor:...}} tags inside shapes/cells and updates <a:spPr> / <a:tcPr> fill.
+     * Supports dot-notation paths (e.g. report.bgTitleColor) and flexible spacing.
+     */
+    applyBgColors(xmlSnippet, context) {
+        // Target full PowerPoint shape XML blocks (<p:sp>...</p:sp>) or table cells (<a:tc>...<\/a:tc>)
+        const containerRegex = /(<p:sp[^>]*?>[\s\S]*?<\/p:sp>|<a:tc[^>]*?>[\s\S]*?<\/a:tc>)/gi;
+
+        return xmlSnippet.replace(containerRegex, (containerXml) => {
+            const plainText = containerXml.replace(/<[^>]+>/g, "");
+            const colorTagMatch = plainText.match(/\{\{bgColor:\s*([^{}\s]+)\}\}/);
+
+            if (!colorTagMatch) return containerXml;
+
+            const colorKey = colorTagMatch[1].trim();
+            const hexRaw = this.resolve(context, colorKey) ?? this.resolve(this.data, colorKey);
+
+            // 1. Remove the {{bgColor:...}} tag from all text runs
+            let updatedXml = containerXml.replace(/\{\{bgColor:\s*[^{}\s]+\}\}\s*/g, "");
+
+            if (!hexRaw) return updatedXml;
+
+            const hex = String(hexRaw).replace('#', '').trim();
+            const fillXml = `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`;
+
+            // 2. Target Shape Properties (<p:spPr>) — Subtitles, Titles, Text Boxes
+            if (/<p:spPr[^>]*?>/i.test(updatedXml)) {
+                return updatedXml.replace(/<p:spPr([^>]*?)>([\s\S]*?)<\/p:spPr>/i, (match, attrs, innerProps) => {
+                    // Remove <a:noFill/> or any existing fill tags completely
+                    let cleanedProps = innerProps.replace(/<a:(solidFill|gradFill|blipFill|pattFill|noFill)[^>]*?(\/>|>[\s\S]*?<\/a:\1>)/gi, "");
+                    return `<p:spPr${attrs}>${fillXml}${cleanedProps}</p:spPr>`;
+                });
+            }
+
+            // 3. Target Table Cell Properties (<a:tcPr>) — Table Cells
+            if (/<a:tcPr[^>]*?>/i.test(updatedXml)) {
+                return updatedXml.replace(/<a:tcPr([^>]*?)>([\s\S]*?)<\/a:tcPr>/i, (match, attrs, innerProps) => {
+                    let cleanedProps = innerProps.replace(/<a:(solidFill|gradFill|blipFill|pattFill|noFill)[^>]*?(\/>|>[\s\S]*?<\/a:\1>)/gi, "");
+                    return `<a:tcPr${attrs}>${fillXml}${cleanedProps}</a:tcPr>`;
+                });
+            }
+
+            return updatedXml;
+        });
     }
 
     renderSingleItem(slide, tree, context) {
@@ -223,11 +373,24 @@ class PptxBlockRenderer {
     }
 
     replaceVariables(text, context) {
-        return text.replace(
+        // First, sanitize XML paragraph runs to eliminate split <a:t> boundaries
+        let sanitizedText = XmlSanitizer.sanitizeParagraphs(text);
+
+        // Apply dynamic text and background fill colors
+        sanitizedText = this.applyTextColors(sanitizedText, context);
+        sanitizedText = this.applyBgColors(sanitizedText, context);
+
+        // Process standard variable substitutions
+        return sanitizedText.replace(
             /\{\{([^{}]+)\}\}/g,
             (match, expression) => {
                 const trimmed = expression.trim();
-                if (trimmed.startsWith("#") || trimmed.startsWith("/")) {
+                if (
+                    trimmed.startsWith("#") ||
+                    trimmed.startsWith("/") ||
+                    trimmed.startsWith("textColor:") ||
+                    trimmed.startsWith("bgColor:")
+                ) {
                     return match;
                 }
 
