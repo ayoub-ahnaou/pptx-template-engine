@@ -1,6 +1,8 @@
 {
   "report": {
     "title": "GRC Risk Assessment Report",
+    "textColor": "#003366",
+    "bgTitleColor": "#E74C3C",
     "date": "September 08, 2026"
   },
   "company": {
@@ -16,6 +18,7 @@
       "name": "Data Loss",
       "level": "Critical",
       "status": "Open",
+      "statusColor": "#4CAF50",
       "owner": "Security Team",
       "description": "Loss of sensitive company information.",
       "mitigation": "Implement stronger backup and access controls."
@@ -24,6 +27,7 @@
       "name": "Unauthorized Access",
       "level": "High",
       "status": "Mitigated",
+      "statusColor": "#F5A623",
       "owner": "IT Team",
       "description": "Unauthorized users may access protected resources.",
       "mitigation": "Enforce multi-factor authentication."
@@ -32,6 +36,7 @@
       "name": "Blocked Users",
       "level": "Low",
       "status": "Installed",
+      "statusColor": "#A5D6A7",
       "owner": "Infrastructure Team",
       "description": "Users are blocked from accessing certain resources.",
       "mitigation": "Review and update user access permissions."
