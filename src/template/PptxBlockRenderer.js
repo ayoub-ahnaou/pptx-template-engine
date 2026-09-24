@@ -22,15 +22,53 @@ class PptxBlockRenderer {
     }
 
     render(slide, tree) {
-        // 1. First, check if slide XML contains any table loops (e.g. {{#risks}} inside <a:tbl>)
+        console.log(`Processing Slide ${slide.number || slide.id || '...'}`);
+
+        // 1. Sanitize raw slide XML to repair broken <a:t> text runs across boundaries
+        let slideXml = slide.getXml();
+        slideXml = XmlSanitizer.sanitizeParagraphs(slideXml);
+        slide.setXml(slideXml);
+
+        // 2. Process all table loops first (e.g. {{#risks}} inside <a:tbl>)
         this.renderAllTableSections(slide);
 
-        // 2. Then, process standard shape loops from the AST tree
+        // 3. Process static slide placeholders (Titles, Subtitles, standalone shapes)
+        this.renderGlobalPlaceholders(slide);
+
+        // 4. Process standard AST shape section loops
         for (const node of tree) {
             if (node.type === "section" && !this.isTableLoop(slide, node)) {
                 this.renderSection(slide, node);
             }
         }
+    }
+
+    /**
+     * Replaces variables and handles bgColor/textColor on static shapes (titles, subtitles)
+     * across the entire slide XML.
+     */
+    renderGlobalPlaceholders(slide) {
+        let slideXml = slide.getXml();
+
+        if (slideXml.includes("bgColor:")) {
+            console.log("-> Found bgColor tag on slide! Processing...");
+        }
+
+        // 1. Sanitize text run splits across the entire slide
+        slideXml = XmlSanitizer.sanitizeParagraphs(slideXml);
+
+        // 2. Process background fills & text colors across slide XML
+        slideXml = this.applyBgColors(slideXml, this.data);
+        slideXml = this.applyTextColors(slideXml, this.data);
+
+        // 3. Replace regular variables
+        slideXml = this.replaceVariables(slideXml, this.data);
+
+        // 4. Force-erase any lingering color tags in raw text runs (<a:t>...</a:t>)
+        slideXml = slideXml.replace(/\{\{(bgColor|textColor):\s*[^{}\s]+\}\}\s*/g, "");
+
+        // 5. Update slide XML
+        slide.setXml(slideXml);
     }
 
     /**
@@ -132,16 +170,12 @@ class PptxBlockRenderer {
         const headerRows = rows.slice(0, startRowIdx);
         let contentRows = [];
 
-        // --- FIXED ROW PARTITIONING ---
         if (startRowIdx === endRowIdx) {
-            // Both tags live in the same row -> that row IS the content template
             contentRows = [rows[startRowIdx]];
         } else if (startRowIdx < endRowIdx) {
             if (startRowIdx + 1 < endRowIdx) {
-                // Control tags are on separate dedicated boundary rows
                 contentRows = rows.slice(startRowIdx + 1, endRowIdx);
             } else {
-                // Adjacent rows
                 contentRows = [rows[startRowIdx]];
             }
         }
@@ -225,7 +259,6 @@ class PptxBlockRenderer {
      */
     applyTextColors(xmlSnippet, context) {
         return xmlSnippet.replace(/<a:p[^>]*?>[\s\S]*?<\/a:p>/gi, (paraXml) => {
-            // Strip internal XML tags to evaluate full plain text
             const plainText = paraXml.replace(/<[^>]+>/g, "");
             const colorTagMatch = plainText.match(/\{\{textColor:\s*([^{}\s]+)\}\}/);
 
@@ -234,7 +267,6 @@ class PptxBlockRenderer {
             const colorKey = colorTagMatch[1].trim();
             const hexRaw = this.resolve(context, colorKey) ?? this.resolve(this.data, colorKey);
 
-            // Clean the tag string from paragraph text runs
             let updatedPara = paraXml.replace(new RegExp(`\\{\\{textColor:\\s*${this.escapeRegex(colorKey)}\\}\\}\\s*`, 'g'), "");
 
             if (!hexRaw) return updatedPara;
@@ -242,7 +274,6 @@ class PptxBlockRenderer {
             const hex = String(hexRaw).replace('#', '').trim();
             const colorXml = `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`;
 
-            // Inject or update solidFill inside <a:rPr>
             return updatedPara.replace(/<a:rPr([^>]*?)>([\s\S]*?)<\/a:rPr>/gi, (match, attrs, innerProps) => {
                 let newInnerProps = innerProps;
                 if (/<a:solidFill[^>]*?>[\s\S]*?<\/a:solidFill>/i.test(newInnerProps)) {
@@ -257,13 +288,12 @@ class PptxBlockRenderer {
 
     /**
      * Replaces {{bgColor:...}} tags inside shapes/cells and updates <a:spPr> / <a:tcPr> fill.
-     * Supports dot-notation paths (e.g. report.bgTitleColor) and flexible spacing.
      */
     applyBgColors(xmlSnippet, context) {
         // Target full PowerPoint shape XML blocks (<p:sp>...</p:sp>) or table cells (<a:tc>...<\/a:tc>)
         const containerRegex = /(<p:sp[^>]*?>[\s\S]*?<\/p:sp>|<a:tc[^>]*?>[\s\S]*?<\/a:tc>)/gi;
 
-        return xmlSnippet.replace(containerRegex, (containerXml) => {
+        let processedXml = xmlSnippet.replace(containerRegex, (containerXml) => {
             const plainText = containerXml.replace(/<[^>]+>/g, "");
             const colorTagMatch = plainText.match(/\{\{bgColor:\s*([^{}\s]+)\}\}/);
 
@@ -272,7 +302,7 @@ class PptxBlockRenderer {
             const colorKey = colorTagMatch[1].trim();
             const hexRaw = this.resolve(context, colorKey) ?? this.resolve(this.data, colorKey);
 
-            // 1. Remove the {{bgColor:...}} tag from all text runs
+            // 1. Strip the {{bgColor:...}} tag string from internal text runs
             let updatedXml = containerXml.replace(/\{\{bgColor:\s*[^{}\s]+\}\}\s*/g, "");
 
             if (!hexRaw) return updatedXml;
@@ -280,28 +310,38 @@ class PptxBlockRenderer {
             const hex = String(hexRaw).replace('#', '').trim();
             const fillXml = `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`;
 
-            // 2. Target Shape Properties (<p:spPr>) — Subtitles, Titles, Text Boxes
+            // 2. Target Shape Properties (<p:spPr>) — Handles Titles, Subtitles, Text Boxes
             if (/<p:spPr[^>]*?>/i.test(updatedXml)) {
-                return updatedXml.replace(/<p:spPr([^>]*?)>([\s\S]*?)<\/p:spPr>/i, (match, attrs, innerProps) => {
-                    // Remove <a:noFill/> or any existing fill tags completely
+                updatedXml = updatedXml.replace(/<p:spPr([^>]*?)>([\s\S]*?)<\/p:spPr>/i, (match, attrs, innerProps) => {
                     let cleanedProps = innerProps.replace(/<a:(solidFill|gradFill|blipFill|pattFill|noFill)[^>]*?(\/>|>[\s\S]*?<\/a:\1>)/gi, "");
                     return `<p:spPr${attrs}>${fillXml}${cleanedProps}</p:spPr>`;
                 });
             }
-
             // 3. Target Table Cell Properties (<a:tcPr>) — Table Cells
-            if (/<a:tcPr[^>]*?>/i.test(updatedXml)) {
-                return updatedXml.replace(/<a:tcPr([^>]*?)>([\s\S]*?)<\/a:tcPr>/i, (match, attrs, innerProps) => {
+            else if (/<a:tcPr[^>]*?>/i.test(updatedXml)) {
+                updatedXml = updatedXml.replace(/<a:tcPr([^>]*?)>([\s\S]*?)<\/a:tcPr>/i, (match, attrs, innerProps) => {
                     let cleanedProps = innerProps.replace(/<a:(solidFill|gradFill|blipFill|pattFill|noFill)[^>]*?(\/>|>[\s\S]*?<\/a:\1>)/gi, "");
                     return `<a:tcPr${attrs}>${fillXml}${cleanedProps}</a:tcPr>`;
                 });
+            } else if (/<a:tc[^>]*?>/i.test(updatedXml)) {
+                updatedXml = updatedXml.replace(/<a:tc([^>]*?)>/i, `<a:tc$1><a:tcPr>${fillXml}</a:tcPr>`);
             }
 
             return updatedXml;
         });
+
+        // Fail-safe cleanup: Erase any leftover {{bgColor:...}} tags in raw text runs across the slide XML
+        return processedXml.replace(/\{\{bgColor:\s*[^{}\s]+\}\}\s*/g, "");
     }
 
     renderSingleItem(slide, tree, context) {
+        // 1. Process global colors & variables on the entire cloned slide XML
+        let slideXml = slide.getXml();
+        slideXml = XmlSanitizer.sanitizeParagraphs(slideXml);
+        slideXml = this.replaceVariables(slideXml, context);
+        slide.setXml(slideXml);
+
+        // 2. Process AST shape nodes (conditions and section shapes)
         for (const node of tree) {
             if (node.type === "section") {
                 const selectedShapes = this.renderNodes(node.children, context);
@@ -316,6 +356,8 @@ class PptxBlockRenderer {
                 for (const shape of selectedShapes) {
                     const originalXml = shape.getXml();
                     const currentText = shape.getText();
+                    
+                    // Run replaceVariables to handle item-level colors & variables
                     const updatedText = this.replaceVariables(currentText, context);
 
                     shape.setText(updatedText);
@@ -373,25 +415,28 @@ class PptxBlockRenderer {
     }
 
     replaceVariables(text, context) {
-        // First, sanitize XML paragraph runs to eliminate split <a:t> boundaries
+        // 1. Sanitize XML paragraph runs to eliminate split <a:t> boundaries
         let sanitizedText = XmlSanitizer.sanitizeParagraphs(text);
 
-        // Apply dynamic text and background fill colors
-        sanitizedText = this.applyTextColors(sanitizedText, context);
+        // 2. Apply dynamic background fills (shapes & table cells)
         sanitizedText = this.applyBgColors(sanitizedText, context);
 
-        // Process standard variable substitutions
-        return sanitizedText.replace(
+        // 3. Apply dynamic text colors
+        sanitizedText = this.applyTextColors(sanitizedText, context);
+
+        // 4. Process standard variable substitutions
+        let processed = sanitizedText.replace(
             /\{\{([^{}]+)\}\}/g,
             (match, expression) => {
                 const trimmed = expression.trim();
-                if (
-                    trimmed.startsWith("#") ||
-                    trimmed.startsWith("/") ||
-                    trimmed.startsWith("textColor:") ||
-                    trimmed.startsWith("bgColor:")
-                ) {
+                
+                // If it's a loop boundary or color directive, leave it for its specific renderer or erase it
+                if (trimmed.startsWith("#") || trimmed.startsWith("/")) {
                     return match;
+                }
+                
+                if (trimmed.startsWith("textColor:") || trimmed.startsWith("bgColor:")) {
+                    return ""; // Always strip color tags from visible text
                 }
 
                 const value = this.resolve(context, trimmed) ?? this.resolve(this.data, trimmed);
@@ -403,6 +448,9 @@ class PptxBlockRenderer {
                 return this.escapeXml(String(value));
             }
         );
+
+        // 5. Final safety pass: remove any leftover {{bgColor:...}} or {{textColor:...}} tags
+        return processed.replace(/\{\{(bgColor|textColor):\s*[^{}\s]+\}\}\s*/g, "");
     }
 
     resolve(context, expression) {
