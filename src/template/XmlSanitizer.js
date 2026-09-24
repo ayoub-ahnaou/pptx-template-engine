@@ -8,14 +8,22 @@ class XmlSanitizer {
         if (!xmlString || typeof xmlString !== "string") return xmlString;
 
         return xmlString.replace(/<a:p[^>]*?>[\s\S]*?<\/a:p>/gi, (pXml) => {
+            // Strip XML tags to inspect plain text content
             const plainText = pXml.replace(/<[^>]+>/g, "");
-            if (!plainText.includes("{{")) return pXml;
+            
+            // If paragraph does not contain mustache syntax {{...}}, leave it untouched
+            if (!plainText.includes("{{") || !plainText.includes("}}")) {
+                return pXml;
+            }
 
+            // Extract all text nodes inside <a:t>
             const textMatches = [...pXml.matchAll(/<a:t[^>]*?>([\s\S]*?)<\/a:t>/gi)];
-            if (textMatches.length <= 1) return pXml;
+            if (textMatches.length === 0) return pXml;
 
+            // Combine fragmented text strings
             const fullText = textMatches.map(m => m[1]).join("");
 
+            // Rebuild the paragraph with full text in the first run and empty remaining runs
             let replacedFirst = false;
             return pXml.replace(/<a:t([^>]*?)>[\s\S]*?<\/a:t>/gi, (match, attrs) => {
                 if (!replacedFirst) {
