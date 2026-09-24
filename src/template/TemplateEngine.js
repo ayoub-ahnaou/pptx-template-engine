@@ -83,21 +83,16 @@ class TemplateEngine {
                 }
             }
 
-            // 2. IN-SLIDE TABLE & SHAPE LOOPS ({{#items}})
-            const rawXml = slide.getXml();
-            const hasSectionInTree = tree.some(node => node.type === "section");
-            const hasLoopInXml = /\{\{#[^{}]+\}\}/.test(rawXml);
-
-            if (hasSectionInTree || hasLoopInXml) {
-                this.blockRenderer.render(slide, tree);
-                
-                // Refresh shapes and AST tree from updated slide XML after table mutations
-                shapes = slide.getTextShapes();
-                try {
-                    tree = this.parser.parse(shapes);
-                } catch (e) {
-                    tree = shapes.map(s => ({ type: "shape", shape: s }));
-                }
+            // 2. RENDER ALL SLIDES (TABLES, SHAPES, TITLES, BG & TEXT COLORS)
+            // Always run blockRenderer so global placeholders, titles, and color tags are processed
+            this.blockRenderer.render(slide, tree);
+            
+            // Refresh shapes and AST tree from updated slide XML after block rendering
+            shapes = slide.getTextShapes();
+            try {
+                tree = this.parser.parse(shapes);
+            } catch (e) {
+                tree = shapes.map(s => ({ type: "shape", shape: s }));
             }
 
             // 3. STANDALONE CONDITIONS ({{#if condition}})
@@ -111,7 +106,7 @@ class TemplateEngine {
                 shapes = slide.getTextShapes();
             }
 
-            // 4. GLOBAL VARIABLE REPLACEMENT (project.name, project.manager, etc.)
+            // 4. GLOBAL VARIABLE REPLACEMENT (Fallback for remaining project.name, etc.)
             this.processGlobalVariables(slide, this.data);
 
             // Commit final slide XML back to presentation ZIP
